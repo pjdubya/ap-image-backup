@@ -198,6 +198,8 @@ if __name__ == "__main__":
     parser.add_argument("--delete_source", type=parse_bool, default=False, help="Delete source files after copying successfully")
     args = parser.parse_args()
 
+    logging.info(f"Starting script {__file__} with args: {args}")
+
     server = args.server
     username = args.username
     password = args.password
