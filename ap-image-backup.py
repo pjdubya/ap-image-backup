@@ -198,6 +198,7 @@ if __name__ == "__main__":
     parser.add_argument("--delete_source", type=parse_bool, default=False, help="Delete source files after copying successfully")
     args = parser.parse_args()
 
+    logging.info("\n***********\nStarting...\n***********")
     logging.info(f"Starting script {__file__} with args: {args}")
 
     server = args.server
@@ -240,7 +241,6 @@ if __name__ == "__main__":
     if not os.path.exists(local_path):
         report_error_and_exit(f"Local path {local_path} does not exist")
 
-    logging.info("\n***********\nStarting...\n***********")
     logging.info("Share root: %s", share_root)   
     logging.info("Local path: %s", local_path)
     logging.info("Selected profile: %s", profile)
