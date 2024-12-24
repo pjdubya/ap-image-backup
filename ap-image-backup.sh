@@ -17,7 +17,7 @@ pip install -r "$script_dir/requirements.txt"
 
 # Get hostname and set appropriate path
 hostname=$(hostname)
-if [ "$hostname" = "POLARIS" ]; then
+if [ "$hostname" = "Polaris" ]; then
     localpath="D:\\Pictures\\NINA"
     delete_source=False
 else
