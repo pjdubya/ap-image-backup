@@ -193,6 +193,97 @@ def report_error_and_exit(message):
     logging.error(message)
     sys.exit(1)
 
+def get_nas_targets(smb_server, smb_share, smb_username, smb_password):
+    """Get list of available target directories on NAS"""
+    smbclient.register_session(smb_server, username=smb_username, password=smb_password)
+    try:
+        targets = [item.name for item in smbclient.scandir(smb_share) if item.is_dir()]
+        return targets
+    finally:
+        smbclient.reset_connection_cache()
+
+def copy_nas_files_to_local(source_dir, local_path, smb_server, smb_share, smb_username, smb_password):
+    """Copy files from NAS to local processing machine"""
+    errors_detected = False
+    
+    # Register the SMB server session
+    smbclient.register_session(smb_server, username=smb_username, password=smb_password)
+    
+    try:
+        # Get available targets
+        targets = get_nas_targets(smb_server, smb_share, smb_username, smb_password)
+        if not targets:
+            logging.error("No target directories found on NAS")
+            return
+        
+        # Present targets to user
+        print("\nAvailable targets:")
+        for i, target in enumerate(targets, 1):
+            print(f"{i}. {target}")
+        
+        while True:
+            try:
+                choice = int(input("\nSelect target number: ")) - 1
+                if 0 <= choice < len(targets):
+                    selected_target = targets[choice]
+                    break
+                print("Invalid selection. Please try again.")
+            except ValueError:
+                print("Please enter a number.")
+        
+        target_path = os.path.join(smb_share, selected_target)
+        local_target_path = os.path.join(local_path, selected_target)
+        
+        # Create local target directory if it doesn't exist
+        os.makedirs(local_target_path, exist_ok=True)
+        
+        # Walk through the NAS directory
+        for root, dirs, files in smbclient.walk(target_path):
+            # Create corresponding local directory structure
+            rel_path = os.path.relpath(root, target_path)
+            local_dir = os.path.join(local_target_path, rel_path)
+            os.makedirs(local_dir, exist_ok=True)
+            
+            # Copy files to local
+            for file in files:
+                smb_file_path = os.path.join(root, file)
+                local_file_path = os.path.join(local_dir, file)
+                
+                # Check if file already exists locally with same size and modification time
+                try:
+                    smb_stat = smbclient.stat(smb_file_path)
+                    if os.path.exists(local_file_path):
+                        local_stat = os.stat(local_file_path)
+                        if (local_stat.st_size, int(local_stat.st_mtime)) == (smb_stat.st_size, int(smb_stat.st_mtime)):
+                            logging.info(f"Skipping {file} as an identical file already exists locally")
+                            continue
+                except Exception as e:
+                    logging.error(f"Error checking file stats: {e}")
+                    errors_detected = True
+                    continue
+                
+                # Copy the file
+                try:
+                    with smbclient.open_file(smb_file_path, mode='rb') as smb_file:
+                        with open(local_file_path, 'wb') as local_file:
+                            local_file.write(smb_file.read())
+                    
+                    # Set the modification time of the local file
+                    os.utime(local_file_path, (smb_stat.st_mtime, smb_stat.st_mtime))
+                    logging.info(f"Copied {smb_file_path} to local: {local_file_path}")
+                except Exception as e:
+                    logging.error(f"Failed to copy {smb_file_path} to local: {e}")
+                    errors_detected = True
+        
+        if errors_detected:
+            logging.warning("Some errors occurred during the copy operation")
+        else:
+            logging.info("All files copied successfully")
+            
+    finally:
+        # Unregister the SMB server session
+        smbclient.reset_connection_cache()
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--server", type=str, help="Hostname of server, e.g. myserver.local")
@@ -263,7 +354,7 @@ if __name__ == "__main__":
     elif (profile == Profile.WIP_TO_NAS):
        copy_local_files_to_nas(local_path, server, share_root, username, password, CopyType.WIP, delete_source)
     elif (profile == Profile.NAS_TO_PROCESSING):
-        report_error_and_exit("NAS_TO_PROCESSING not implemented yet")
+        copy_nas_files_to_local(server_path, local_path, server, share_root, username, password)
     else:
         report_error_and_exit("Invalid profile")
     
