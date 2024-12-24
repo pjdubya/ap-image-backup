@@ -66,8 +66,9 @@ def copy_local_files_to_nas(source_dir, smb_server, smb_share, smb_username, smb
     smbclient.register_session(smb_server, username=smb_username, password=smb_password)
 
     try:
-        # Patterns to exclude
+        # Patterns for special handling
         wip_patterns = ["WBPP", "Processing"]
+        never_delete_patterns = ["Processing", "ASI2600MC Pro Masters"]
 
         dirs_to_skip = []
         dirs_to_delete = []
@@ -158,6 +159,11 @@ def copy_local_files_to_nas(source_dir, smb_server, smb_share, smb_username, smb
 
             files_to_delete.reverse()
             for file in files_to_delete:
+                # Check if the file is in a directory that should never be deleted
+                if any(pattern in file for pattern in never_delete_patterns):
+                    logging.info(f"Skipping deletion of file {file} as it matches a pattern in never_delete_patterns")
+                    continue
+
                 try:
                     logging.info(f"Deleting file {file}")
                     os.remove(file)
@@ -167,6 +173,7 @@ def copy_local_files_to_nas(source_dir, smb_server, smb_share, smb_username, smb
             dirs_to_delete.reverse()
             logging.info(rf"Pruning skipped directories from the list to delete: {dirs_to_skip}")
             dirs_to_delete = [dir for dir in dirs_to_delete if dir not in dirs_to_skip]
+            dirs_to_delete = [dir for dir in dirs_to_delete if not any(pattern in dir for pattern in never_delete_patterns)]           
             
             for dir in dirs_to_delete:
                 try:
@@ -198,8 +205,13 @@ if __name__ == "__main__":
     parser.add_argument("--delete_source", type=parse_bool, default=False, help="Delete source files after copying successfully")
     args = parser.parse_args()
 
+    # Remove password from args before logging
+    logging_args = args.__dict__.copy()
+    if "password" in logging_args:
+        logging_args["password"] = "*" * len(logging_args["password"])
+
     logging.info("\n***********\nStarting...\n***********")
-    logging.info(f"Starting script {__file__} with args: {args}")
+    logging.info(f"Starting script {__file__} with args: {logging_args}")
 
     server = args.server
     username = args.username
