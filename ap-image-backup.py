@@ -202,6 +202,52 @@ def get_nas_targets(smb_share):
         logging.error(f"Error getting NAS targets: {e}")
         return []
 
+def copy_dir_and_contents(smb_path, local_target_path):
+    """Copy directory and its contents to target directory"""
+
+    errors_detected = False
+
+    # Walk through the NAS directory
+    for root, dirs, files in smbclient.walk(smb_path):
+        # Create corresponding local directory structure
+        rel_path = os.path.relpath(root, smb_path)
+        local_dir = os.path.join(local_target_path, rel_path)
+
+        os.makedirs(local_dir, exist_ok=True)
+        
+        # Copy files to local
+        for file in files:
+            smb_file_path = os.path.join(root, file)
+            local_file_path = os.path.join(local_dir, file)
+            
+            # Check if file already exists locally with same size and modification time
+            try:
+                smb_stat = smbclient.stat(smb_file_path)
+                if os.path.exists(local_file_path):
+                    local_stat = os.stat(local_file_path)
+                    if (local_stat.st_size, int(local_stat.st_mtime)) == (smb_stat.st_size, int(smb_stat.st_mtime)):
+                        logging.info(f"Skipping {file} as an identical file already exists locally")
+                        continue
+            except Exception as e:
+                logging.error(f"Error checking file stats: {e}")
+                errors_detected = True
+                continue
+            
+            # Copy the file
+            try:
+                with smbclient.open_file(smb_file_path, mode='rb') as smb_file:
+                    with open(local_file_path, 'wb') as local_file:
+                        local_file.write(smb_file.read())
+                
+                # Set the modification time of the local file
+                os.utime(local_file_path, (smb_stat.st_mtime, smb_stat.st_mtime))
+                logging.info(f"Copied {smb_file_path} to local: {local_file_path}")
+            except Exception as e:
+                logging.error(f"Failed to copy {smb_file_path} to local: {e}")
+                errors_detected = True
+
+    return errors_detected
+
 def copy_nas_files_to_local(source_dir, local_path, smb_server, smb_share, smb_username, smb_password):
     """Copy files from NAS to local processing machine"""
     errors_detected = False
@@ -231,7 +277,9 @@ def copy_nas_files_to_local(source_dir, local_path, smb_server, smb_share, smb_u
             except ValueError:
                 print("Please enter a number.")
         
-        # Don't escape spaces - let smbclient handle them naturally
+        # Ask if user also wants to retrieve flats for the selected target's lights
+        retrieve_flats = input("Also retrieve flats for the selected target's lights? (y/n): ").lower() == "y"
+
         smb_path = os.path.join(smb_share, selected_target)
         local_target_path = os.path.join(local_path, selected_target)
 
@@ -241,44 +289,18 @@ def copy_nas_files_to_local(source_dir, local_path, smb_server, smb_share, smb_u
         # Create local target directory if it doesn't exist
         os.makedirs(local_target_path, exist_ok=True)
         
-        # Walk through the NAS directory
-        for root, dirs, files in smbclient.walk(smb_path):
-            # Create corresponding local directory structure
-            rel_path = os.path.relpath(root, smb_path)
-            local_dir = os.path.join(local_target_path, rel_path)
-            os.makedirs(local_dir, exist_ok=True)
-            
-            # Copy files to local
-            for file in files:
-                smb_file_path = os.path.join(root, file)
-                local_file_path = os.path.join(local_dir, file)
-                
-                # Check if file already exists locally with same size and modification time
-                try:
-                    smb_stat = smbclient.stat(smb_file_path)
-                    if os.path.exists(local_file_path):
-                        local_stat = os.stat(local_file_path)
-                        if (local_stat.st_size, int(local_stat.st_mtime)) == (smb_stat.st_size, int(smb_stat.st_mtime)):
-                            logging.info(f"Skipping {file} as an identical file already exists locally")
-                            continue
-                except Exception as e:
-                    logging.error(f"Error checking file stats: {e}")
-                    errors_detected = True
-                    continue
-                
-                # Copy the file
-                try:
-                    with smbclient.open_file(smb_file_path, mode='rb') as smb_file:
-                        with open(local_file_path, 'wb') as local_file:
-                            local_file.write(smb_file.read())
-                    
-                    # Set the modification time of the local file
-                    os.utime(local_file_path, (smb_stat.st_mtime, smb_stat.st_mtime))
-                    logging.info(f"Copied {smb_file_path} to local: {local_file_path}")
-                except Exception as e:
-                    logging.error(f"Failed to copy {smb_file_path} to local: {e}")
-                    errors_detected = True
-        
+        errors_detected = copy_dir_and_contents(smb_path, local_target_path)
+
+        if retrieve_flats:
+            # Get list of lights top level directory folder names so we can retrieve the flats for them
+            contents = smbclient.listdir(smb_path)
+            top_level_dirs = [entry for entry in contents if smbclient.path.isdir(f"{smb_path}/{entry}")]
+            for subdir in top_level_dirs:
+                smb_path = os.path.join(smb_share, "_FlatWizard", subdir)
+                local_target_path = os.path.join(local_path, "_FlatWizard", subdir)
+                logging.info(f"Copying flats for {subdir} from {smb_path} to {local_target_path}")
+                errors_detected = copy_dir_and_contents(smb_path, local_target_path)
+
         if errors_detected:
             logging.warning("Some errors occurred during the copy operation")
         else:
