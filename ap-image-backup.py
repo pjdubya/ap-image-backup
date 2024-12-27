@@ -131,7 +131,7 @@ def copy_local_files_to_nas(source_dir, smb_server, smb_share, smb_username, smb
                         logging.info(f"Skipping {source_file_path} as an identical file already exists on the SMB share")
                         continue
                 except Exception as e:
-                    pass
+                    logging.debug(f"Error checking file stats: {e}")
 
                 # Copy the file if it doesn't exist on the SMB share or if it's different
                 with open(source_file_path, "rb") as f:
@@ -193,14 +193,14 @@ def report_error_and_exit(message):
     logging.error(message)
     sys.exit(1)
 
-def get_nas_targets(smb_server, smb_share, smb_username, smb_password):
+def get_nas_targets(smb_share):
     """Get list of available target directories on NAS"""
-    smbclient.register_session(smb_server, username=smb_username, password=smb_password)
     try:
-        targets = [item.name for item in smbclient.scandir(smb_share) if item.is_dir()]
+        targets = sorted([item.name for item in smbclient.scandir(smb_share) if item.is_dir()])
         return targets
-    finally:
-        smbclient.reset_connection_cache()
+    except Exception as e:
+        logging.error(f"Error getting NAS targets: {e}")
+        return []
 
 def copy_nas_files_to_local(source_dir, local_path, smb_server, smb_share, smb_username, smb_password):
     """Copy files from NAS to local processing machine"""
@@ -211,7 +211,7 @@ def copy_nas_files_to_local(source_dir, local_path, smb_server, smb_share, smb_u
     
     try:
         # Get available targets
-        targets = get_nas_targets(smb_server, smb_share, smb_username, smb_password)
+        targets = get_nas_targets(smb_share)
         if not targets:
             logging.error("No target directories found on NAS")
             return
@@ -231,16 +231,20 @@ def copy_nas_files_to_local(source_dir, local_path, smb_server, smb_share, smb_u
             except ValueError:
                 print("Please enter a number.")
         
-        target_path = os.path.join(smb_share, selected_target)
+        # Don't escape spaces - let smbclient handle them naturally
+        smb_path = os.path.join(smb_share, selected_target)
         local_target_path = os.path.join(local_path, selected_target)
+
+        logging.info(f"NAS source path: {smb_path}")
+        logging.info(f"Local target path: {local_target_path}")
         
         # Create local target directory if it doesn't exist
         os.makedirs(local_target_path, exist_ok=True)
         
         # Walk through the NAS directory
-        for root, dirs, files in smbclient.walk(target_path):
+        for root, dirs, files in smbclient.walk(smb_path):
             # Create corresponding local directory structure
-            rel_path = os.path.relpath(root, target_path)
+            rel_path = os.path.relpath(root, smb_path)
             local_dir = os.path.join(local_target_path, rel_path)
             os.makedirs(local_dir, exist_ok=True)
             
@@ -352,7 +356,7 @@ if __name__ == "__main__":
     if (profile == Profile.IMAGE_CAPTURE_TO_NAS):
         copy_local_files_to_nas(local_path, server, share_root, username, password, CopyType.IMAGES, delete_source)
     elif (profile == Profile.WIP_TO_NAS):
-       copy_local_files_to_nas(local_path, server, share_root, username, password, CopyType.WIP, delete_source)
+        copy_local_files_to_nas(local_path, server, share_root, username, password, CopyType.WIP, delete_source)
     elif (profile == Profile.NAS_TO_PROCESSING):
         copy_nas_files_to_local(server_path, local_path, server, share_root, username, password)
     else:
