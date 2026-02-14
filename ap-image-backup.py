@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 import smbclient
+from compare_engine import upsert_nas_index_entries
 from datetime import datetime
 from enum import Enum
 
@@ -61,6 +62,7 @@ def parse_bool(value):
 def copy_local_files_to_nas(source_dir, smb_server, smb_share, smb_username, smb_password, images_or_wip, delete_source):
 
     errors_detected = False
+    nas_db_upserts: list[tuple[str, int, int]] = []
 
     # Register the SMB server session
     smbclient.register_session(smb_server, username=smb_username, password=smb_password)
@@ -145,10 +147,27 @@ def copy_local_files_to_nas(source_dir, smb_server, smb_share, smb_username, smb
                         # Set the modification time of the copied file on the SMB share
                         smbclient.utime(smb_file_path, (original_mtime, original_mtime))
 
+                        rel_path = os.path.relpath(source_file_path, source_dir).replace("\\", "/")
+                        nas_db_upserts.append((rel_path, int(source_file_stat.st_size), int(original_mtime)))
+
                         logging.info(f"Copied {source_file_path} to SMB share: {smb_file_path}")
                     except Exception as e:
                         logging.error(f"Failed to copy {source_file_path} to SMB share: {e}")
                         errors_detected = True
+
+        if nas_db_upserts:
+            try:
+                upsert_nas_index_entries(
+                    server=smb_server,
+                    username=smb_username,
+                    password=smb_password,
+                    share_root=smb_share,
+                    entries=nas_db_upserts,
+                )
+                logging.info("Updated NAS DB index entries for copied files")
+            except Exception as e:
+                logging.error(f"Failed to update NAS DB index entries: {e}")
+                errors_detected = True
 
         if not delete_source:
             logging.info("Delete source flag is not set. Source files will not be deleted.")
