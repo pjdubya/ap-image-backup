@@ -231,6 +231,11 @@ def _same_file(local_path: Path, smb_file_path: str) -> tuple[bool, str]:
     except Exception as exc:
         if _is_missing_smb_exception(exc):
             return False, "missing"
+        try:
+            if not smbclient.path.exists(smb_file_path):
+                return False, "missing"
+        except Exception:
+            pass
         return False, "error"
 
     local_stat = local_path.stat()
@@ -253,6 +258,11 @@ def _same_file_nas_to_local(smb_file_path: str, local_path: Path) -> tuple[bool,
     except Exception as exc:
         if _is_missing_smb_exception(exc):
             return False, "missing-on-nas"
+        try:
+            if not smbclient.path.exists(smb_file_path):
+                return False, "missing-on-nas"
+        except Exception:
+            pass
         return False, "error"
 
     local_stat = local_path.stat()
