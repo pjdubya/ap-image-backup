@@ -406,7 +406,7 @@ class BackupCompareWindow(QMainWindow):
         layout.addWidget(self.summary_label)
         layout.addWidget(self.results_table)
 
-        self.processing_section_label = QLabel("Processing Machine View: NAS → Local pull candidates + actions")
+        self.processing_section_label = QLabel("Folders needing upload to NAS")
         layout.addWidget(self.processing_section_label)
         layout.addWidget(self.pull_table)
         layout.addLayout(queue_controls_layout)
@@ -427,27 +427,30 @@ class BackupCompareWindow(QMainWindow):
     @Slot()
     def on_machine_mode_changed(self) -> None:
         current_mode = self.machine_mode_combo.currentData()
-        processing_mode = current_mode == "processing"
+        _ = current_mode
 
-        self.compare_button.setVisible(not processing_mode)
-        self.compare_mode_label.setVisible(not processing_mode)
-        self.mode_combo.setVisible(not processing_mode)
-        self.capture_section_label.setVisible(not processing_mode)
-        self.results_table.setVisible(not processing_mode)
+        self.compare_button.setVisible(False)
+        self.compare_mode_label.setVisible(False)
+        self.mode_combo.setVisible(False)
+        self.capture_section_label.setVisible(False)
+        self.results_table.setVisible(False)
 
-        self.refresh_status_button.setVisible(processing_mode)
-        self.rebuild_nas_db_button.setVisible(processing_mode)
-        self.include_flats_checkbox.setVisible(processing_mode)
-        self.only_action_needed_checkbox.setVisible(processing_mode)
-        self.processing_section_label.setVisible(processing_mode)
-        self.pull_table.setVisible(processing_mode)
-        self.start_queue_button.setVisible(processing_mode)
-        self.remove_queue_item_button.setVisible(processing_mode)
-        self.clear_queue_button.setVisible(processing_mode)
-        self.queue_section_label.setVisible(processing_mode)
-        self.queue_status_label.setVisible(processing_mode)
-        self.queue_next_label.setVisible(processing_mode)
-        self.queue_table.setVisible(processing_mode)
+        self.refresh_status_button.setVisible(True)
+        self.rebuild_nas_db_button.setVisible(False)
+        self.include_flats_checkbox.setVisible(False)
+        self.only_action_needed_checkbox.setVisible(False)
+        self.processing_section_label.setVisible(True)
+        self.pull_table.setVisible(True)
+        self.start_queue_button.setVisible(True)
+        self.remove_queue_item_button.setVisible(True)
+        self.clear_queue_button.setVisible(True)
+        self.queue_section_label.setVisible(True)
+        self.queue_status_label.setVisible(True)
+        self.queue_next_label.setVisible(True)
+        self.queue_table.setVisible(True)
+
+        self.processing_section_label.setText("Folders needing upload to NAS")
+        self.populate_target_table(self._all_target_results)
 
     @Slot()
     def select_local_folder(self) -> None:
@@ -650,11 +653,11 @@ class BackupCompareWindow(QMainWindow):
         self._all_target_results = results
         self.populate_target_table(results)
 
+        upload_candidates = sum(1 for result in results if (result.local_only_files > 0 or result.different_files > 0))
         self.summary_label.setText(
-            f"Summary: Targets={summary.total_targets}, PullCandidates={summary.pull_candidates}, "
-            f"UpToDate={summary.up_to_date_targets}"
+            f"Summary: Targets={summary.total_targets}, NeedUpload={upload_candidates}"
         )
-        self.status_label.setText("NAS pull-candidate scan complete. Read-only mode made no file changes.")
+        self.status_label.setText("Scan complete. Queue Push for folders with upload differences.")
         self.set_busy_state(False)
 
     @Slot(str)
@@ -701,8 +704,9 @@ class BackupCompareWindow(QMainWindow):
     def populate_target_table(self, results) -> None:
         self.pull_table.setRowCount(0)
         queued_targets = {entry.target for entry in self._queue_entries}
+        upload_results = [result for result in results if (result.local_only_files > 0 or result.different_files > 0)]
 
-        for row_index, result in enumerate(results):
+        for row_index, result in enumerate(upload_results):
             self.pull_table.insertRow(row_index)
             self.pull_table.setItem(row_index, 0, QTableWidgetItem(result.target))
             self.pull_table.setItem(row_index, 1, QTableWidgetItem(result.recent_date))
@@ -720,18 +724,8 @@ class BackupCompareWindow(QMainWindow):
 
             is_queued = result.target in queued_targets
 
-            queue_pull_button = QPushButton("Queue Pull")
-            queue_pull_button.setEnabled((result.missing_locally_files > 0 or result.different_files > 0) and not is_queued)
-            queue_pull_button.clicked.connect(
-                lambda _checked=False, target=result.target: self.add_target_to_queue(
-                    target,
-                    include_flats=self.include_flats_checkbox.isChecked(),
-                    action="pull",
-                )
-            )
-
             queue_push_button = QPushButton("Queue Push")
-            queue_push_button.setEnabled(result.local_only_files > 0 and not is_queued)
+            queue_push_button.setEnabled(not is_queued)
             queue_push_button.clicked.connect(
                 lambda _checked=False, target=result.target: self.add_target_to_queue(
                     target,
@@ -740,19 +734,7 @@ class BackupCompareWindow(QMainWindow):
                 )
             )
 
-            queue_delete_button = QPushButton("Queue Delete")
-            queue_delete_button.setEnabled(result.missing_locally_files > 0 and not is_queued)
-            queue_delete_button.clicked.connect(
-                lambda _checked=False, target=result.target: self.add_target_to_queue(
-                    target,
-                    include_flats=False,
-                    action="delete_force",
-                )
-            )
-
-            action_layout.addWidget(queue_pull_button)
             action_layout.addWidget(queue_push_button)
-            action_layout.addWidget(queue_delete_button)
             self.pull_table.setCellWidget(row_index, 9, action_widget)
 
         self.pull_table.resizeColumnsToContents()
@@ -871,11 +853,18 @@ class BackupCompareWindow(QMainWindow):
             QMessageBox.warning(self, "Invalid local path", "The selected local path does not exist.")
             return
 
-        pull_count = sum(1 for entry in self._queue_entries if entry.action == "pull")
-        flats_count = sum(1 for entry in self._queue_entries if entry.action == "pull" and entry.include_flats)
+        non_push_actions = [entry.target for entry in self._queue_entries if entry.action != "push"]
+        if non_push_actions:
+            QMessageBox.warning(
+                self,
+                "Push-only queue",
+                "This queue is push-only. Remove any non-push entries first.",
+            )
+            return
+
         prompt = (
             f"Start queue with {len(self._queue_entries)} target(s)?\n"
-            f"Pull actions: {pull_count} (include flats on {flats_count})."
+            "Action: Push to NAS"
         )
         confirm = QMessageBox.question(self, "Start queue", prompt)
         if confirm != QMessageBox.Yes:
