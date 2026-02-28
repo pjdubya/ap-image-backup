@@ -10,6 +10,8 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QGridLayout,
     QHBoxLayout,
@@ -20,6 +22,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -28,6 +31,7 @@ from compare_engine import (
     CompareMode,
     compare_local_to_nas,
     delete_nas_only_to_trash,
+    list_action_candidate_files,
     mark_target_pulled,
     pull_target_from_nas,
     push_target_to_nas,
@@ -61,6 +65,8 @@ class QueueEntry:
     target: str
     include_flats: bool
     action: str = "pull"
+    estimated_files: int = -1
+    preview_text: str = ""
     status: str = "Queued"
     progress_percent: int = 0
     copied_files: int = 0
@@ -336,11 +342,12 @@ class BackupCompareWindow(QMainWindow):
         )
         self.pull_table.horizontalHeader().setStretchLastSection(True)
 
-        self.queue_table = QTableWidget(0, 10)
+        self.queue_table = QTableWidget(0, 11)
         self.queue_table.setHorizontalHeaderLabels(
             [
                 "Target Folder",
-                "Include Flats",
+                "Action",
+                "How Many Files",
                 "Status",
                 "Progress %",
                 "Lights C/S/E",
@@ -354,6 +361,7 @@ class BackupCompareWindow(QMainWindow):
         self.queue_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.queue_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.queue_table.horizontalHeader().setStretchLastSection(True)
+        self.queue_table.cellClicked.connect(self.on_queue_table_cell_clicked)
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -427,18 +435,18 @@ class BackupCompareWindow(QMainWindow):
     @Slot()
     def on_machine_mode_changed(self) -> None:
         current_mode = self.machine_mode_combo.currentData()
-        _ = current_mode
+        processing_mode = current_mode == "processing"
 
-        self.compare_button.setVisible(False)
-        self.compare_mode_label.setVisible(False)
-        self.mode_combo.setVisible(False)
-        self.capture_section_label.setVisible(False)
-        self.results_table.setVisible(False)
+        self.compare_button.setVisible(not processing_mode)
+        self.compare_mode_label.setVisible(not processing_mode)
+        self.mode_combo.setVisible(not processing_mode)
+        self.capture_section_label.setVisible(not processing_mode)
+        self.results_table.setVisible(not processing_mode)
 
         self.refresh_status_button.setVisible(True)
-        self.rebuild_nas_db_button.setVisible(False)
-        self.include_flats_checkbox.setVisible(False)
-        self.only_action_needed_checkbox.setVisible(False)
+        self.rebuild_nas_db_button.setVisible(processing_mode)
+        self.include_flats_checkbox.setVisible(processing_mode)
+        self.only_action_needed_checkbox.setVisible(processing_mode)
         self.processing_section_label.setVisible(True)
         self.pull_table.setVisible(True)
         self.start_queue_button.setVisible(True)
@@ -449,7 +457,10 @@ class BackupCompareWindow(QMainWindow):
         self.queue_next_label.setVisible(True)
         self.queue_table.setVisible(True)
 
-        self.processing_section_label.setText("Folders needing upload to NAS")
+        if processing_mode:
+            self.processing_section_label.setText("Processing Machine View: NAS → Local pull candidates + actions")
+        else:
+            self.processing_section_label.setText("Folders needing upload to NAS")
         self.populate_target_table(self._all_target_results)
 
     @Slot()
@@ -653,11 +664,18 @@ class BackupCompareWindow(QMainWindow):
         self._all_target_results = results
         self.populate_target_table(results)
 
-        upload_candidates = sum(1 for result in results if (result.local_only_files > 0 or result.different_files > 0))
-        self.summary_label.setText(
-            f"Summary: Targets={summary.total_targets}, NeedUpload={upload_candidates}"
-        )
-        self.status_label.setText("Scan complete. Queue Push for folders with upload differences.")
+        if self.machine_mode_combo.currentData() == "processing":
+            self.summary_label.setText(
+                f"Summary: Targets={summary.total_targets}, PullCandidates={summary.pull_candidates}, "
+                f"UpToDate={summary.up_to_date_targets}"
+            )
+            self.status_label.setText("NAS pull-candidate scan complete. Read-only mode made no file changes.")
+        else:
+            upload_candidates = sum(1 for result in results if (result.local_only_files > 0 or result.different_files > 0))
+            self.summary_label.setText(
+                f"Summary: Targets={summary.total_targets}, NeedUpload={upload_candidates}"
+            )
+            self.status_label.setText("Scan complete. Queue Push for folders with upload differences.")
         self.set_busy_state(False)
 
     @Slot(str)
@@ -701,12 +719,182 @@ class BackupCompareWindow(QMainWindow):
 
         self.results_table.resizeColumnsToContents()
 
+    def _build_action_preview_lines(self, result, action: str, include_flats: bool = False) -> list[str]:
+        action_titles = {
+            "pull": "Pull from NAS",
+            "push": "Push to NAS",
+            "delete": "Delete on NAS (_Trash)",
+            "delete_force": "Delete on NAS (_Trash, force)",
+        }
+        action_title = action_titles.get(action, action)
+
+        detail_lines = [
+            f"Target: {result.target}",
+            f"Action: {action_title}",
+            "",
+            "Current status snapshot:",
+            f"- Status: {result.status}",
+            f"- NAS files: {result.nas_files}",
+            f"- Local files: {result.local_files}",
+            f"- Missing locally: {result.missing_locally_files}",
+            f"- Local only: {result.local_only_files}",
+            f"- Different: {result.different_files}",
+        ]
+
+        if action == "pull":
+            detail_lines.extend(
+                [
+                    "",
+                    "Pull behavior:",
+                    f"- Includes flats: {'Yes' if include_flats else 'No'}",
+                    "- Copies NAS files into local target for this folder.",
+                ]
+            )
+        elif action == "push":
+            detail_lines.extend(
+                [
+                    "",
+                    "Push behavior:",
+                    "- Copies local files for this target up to NAS.",
+                    "- Existing NAS files with same size+mtime are skipped.",
+                ]
+            )
+        elif action in ("delete", "delete_force"):
+            detail_lines.extend(
+                [
+                    "",
+                    "Delete behavior:",
+                    "- Moves NAS-only files to _Trash (does not hard-delete).",
+                ]
+            )
+            if action == "delete":
+                detail_lines.append("- Requires a successful pull checkpoint for safety.")
+            else:
+                detail_lines.append("- Ignores pull checkpoint safety requirement.")
+
+        return detail_lines
+
+    def _build_action_preview_with_files(
+        self,
+        result,
+        action: str,
+        include_flats: bool,
+        candidate_files: list[str],
+    ) -> list[str]:
+        detail_lines = self._build_action_preview_lines(result, action, include_flats)
+        detail_lines.extend(["", f"Files to be acted on ({len(candidate_files)}):"])
+        if candidate_files:
+            detail_lines.extend(candidate_files)
+        else:
+            detail_lines.append("(none)")
+        return detail_lines
+
+    def _estimate_action_files(self, result, action: str) -> int:
+        if action == "pull":
+            return int(result.missing_locally_files) + int(result.different_files)
+        if action == "push":
+            return int(result.local_only_files) + int(result.different_files)
+        if action in ("delete", "delete_force"):
+            return int(result.missing_locally_files)
+        return -1
+
+    def confirm_queue_action(
+        self,
+        result,
+        action: str,
+        include_flats: bool = False,
+        preview_text: str | None = None,
+    ) -> bool:
+        action_titles = {
+            "pull": "Pull from NAS",
+            "push": "Push to NAS",
+            "delete": "Delete on NAS (_Trash)",
+            "delete_force": "Delete on NAS (_Trash, force)",
+        }
+        action_title = action_titles.get(action, action)
+        if preview_text is None:
+            detail_lines = self._build_action_preview_lines(result, action, include_flats)
+        else:
+            detail_lines = preview_text.splitlines()
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Confirm Queue Action")
+        dialog.resize(680, 420)
+
+        layout = QVBoxLayout(dialog)
+        title_label = QLabel(f"Queue {action_title} for '{result.target}'?")
+        layout.addWidget(title_label)
+
+        details_box = QTextEdit()
+        details_box.setReadOnly(True)
+        details_box.setPlainText("\n".join(detail_lines))
+        layout.addWidget(details_box)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        queue_button = buttons.button(QDialogButtonBox.Ok)
+        if queue_button is not None:
+            queue_button.setText("Queue Action")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        return dialog.exec() == QDialog.Accepted
+
+    def confirm_and_add_target_to_queue(self, result, action: str, include_flats: bool = False) -> None:
+        server = self.server_edit.text().strip()
+        username = self.username_edit.text().strip()
+        password = self.password_edit.text()
+        server_path = self.server_path_edit.text().strip()
+        local_path = self.local_path_edit.text().strip()
+
+        if not server or not username or not password or not server_path or not local_path:
+            QMessageBox.warning(self, "Missing fields", "Please provide server, username, password, server path, and local path.")
+            return
+
+        share_root = rf"\\{server}{server_path}"
+        try:
+            candidate_files = list_action_candidate_files(
+                server=server,
+                username=username,
+                password=password,
+                share_root=share_root,
+                local_root=local_path,
+                target=result.target,
+                action=action,
+                include_flats=include_flats,
+                require_pull_checkpoint=True,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Preview failed", f"Could not generate action file preview:\n{exc}")
+            return
+
+        preview_text = "\n".join(self._build_action_preview_with_files(result, action, include_flats, candidate_files))
+        if not self.confirm_queue_action(
+            result=result,
+            action=action,
+            include_flats=include_flats,
+            preview_text=preview_text,
+        ):
+            return
+        self.add_target_to_queue(
+            target=result.target,
+            include_flats=include_flats,
+            action=action,
+            estimated_files=len(candidate_files),
+            preview_text=preview_text,
+        )
+
     def populate_target_table(self, results) -> None:
         self.pull_table.setRowCount(0)
         queued_targets = {entry.target for entry in self._queue_entries}
-        upload_results = [result for result in results if (result.local_only_files > 0 or result.different_files > 0)]
+        processing_mode = self.machine_mode_combo.currentData() == "processing"
+        display_results = (
+            results
+            if processing_mode
+            else [result for result in results if (result.local_only_files > 0 or result.different_files > 0)]
+        )
 
-        for row_index, result in enumerate(upload_results):
+        for row_index, result in enumerate(display_results):
             self.pull_table.insertRow(row_index)
             self.pull_table.setItem(row_index, 0, QTableWidgetItem(result.target))
             self.pull_table.setItem(row_index, 1, QTableWidgetItem(result.recent_date))
@@ -724,17 +912,45 @@ class BackupCompareWindow(QMainWindow):
 
             is_queued = result.target in queued_targets
 
+            if processing_mode:
+                queue_pull_button = QPushButton("Queue Pull")
+                queue_pull_button.setEnabled((result.missing_locally_files > 0 or result.different_files > 0) and not is_queued)
+                queue_pull_button.clicked.connect(
+                    lambda _checked=False, row_result=result: self.confirm_and_add_target_to_queue(
+                        row_result,
+                        action="pull",
+                        include_flats=self.include_flats_checkbox.isChecked(),
+                    )
+                )
+                action_layout.addWidget(queue_pull_button)
+
             queue_push_button = QPushButton("Queue Push")
-            queue_push_button.setEnabled(not is_queued)
+            if processing_mode:
+                queue_push_button.setEnabled(result.local_only_files > 0 and not is_queued)
+            else:
+                queue_push_button.setEnabled(not is_queued)
             queue_push_button.clicked.connect(
-                lambda _checked=False, target=result.target: self.add_target_to_queue(
-                    target,
-                    include_flats=False,
+                lambda _checked=False, row_result=result: self.confirm_and_add_target_to_queue(
+                    row_result,
                     action="push",
+                    include_flats=False,
                 )
             )
 
             action_layout.addWidget(queue_push_button)
+
+            if processing_mode:
+                queue_delete_button = QPushButton("Queue Delete")
+                queue_delete_button.setEnabled(result.missing_locally_files > 0 and not is_queued)
+                queue_delete_button.clicked.connect(
+                    lambda _checked=False, row_result=result: self.confirm_and_add_target_to_queue(
+                        row_result,
+                        action="delete",
+                        include_flats=False,
+                    )
+                )
+                action_layout.addWidget(queue_delete_button)
+
             self.pull_table.setCellWidget(row_index, 9, action_widget)
 
         self.pull_table.resizeColumnsToContents()
@@ -760,7 +976,14 @@ class BackupCompareWindow(QMainWindow):
         self.only_action_needed_checkbox.setEnabled(not busy)
         self.include_flats_checkbox.setEnabled(not busy)
 
-    def add_target_to_queue(self, target: str, include_flats: bool | None = None, action: str | None = None) -> None:
+    def add_target_to_queue(
+        self,
+        target: str,
+        include_flats: bool | None = None,
+        action: str | None = None,
+        estimated_files: int | None = None,
+        preview_text: str | None = None,
+    ) -> None:
         if self.queue_running:
             QMessageBox.warning(self, "Queue running", "Cannot modify queue while it is running.")
             return
@@ -777,6 +1000,10 @@ class BackupCompareWindow(QMainWindow):
         if existing_entry is not None:
             existing_entry.include_flats = include_flats
             existing_entry.action = action_key
+            if estimated_files is not None:
+                existing_entry.estimated_files = int(estimated_files)
+            if preview_text is not None:
+                existing_entry.preview_text = preview_text
             self.populate_queue_table()
             self.populate_target_table(self._all_target_results)
             QMessageBox.information(
@@ -791,6 +1018,8 @@ class BackupCompareWindow(QMainWindow):
                 target=target,
                 include_flats=include_flats,
                 action=action_key,
+                estimated_files=int(estimated_files) if estimated_files is not None else -1,
+                preview_text=preview_text or "",
             )
         )
         self.populate_queue_table()
@@ -853,19 +1082,28 @@ class BackupCompareWindow(QMainWindow):
             QMessageBox.warning(self, "Invalid local path", "The selected local path does not exist.")
             return
 
-        non_push_actions = [entry.target for entry in self._queue_entries if entry.action != "push"]
-        if non_push_actions:
-            QMessageBox.warning(
-                self,
-                "Push-only queue",
-                "This queue is push-only. Remove any non-push entries first.",
-            )
-            return
+        if self.machine_mode_combo.currentData() == "creation":
+            non_push_actions = [entry.target for entry in self._queue_entries if entry.action != "push"]
+            if non_push_actions:
+                QMessageBox.warning(
+                    self,
+                    "Push-only queue",
+                    "Creation mode queue is push-only. Remove any non-push entries first.",
+                )
+                return
 
-        prompt = (
-            f"Start queue with {len(self._queue_entries)} target(s)?\n"
-            "Action: Push to NAS"
-        )
+        pull_count = sum(1 for entry in self._queue_entries if entry.action == "pull")
+        flats_count = sum(1 for entry in self._queue_entries if entry.action == "pull" and entry.include_flats)
+        if self.machine_mode_combo.currentData() == "creation":
+            prompt = (
+                f"Start queue with {len(self._queue_entries)} target(s)?\n"
+                "Action: Push to NAS"
+            )
+        else:
+            prompt = (
+                f"Start queue with {len(self._queue_entries)} target(s)?\n"
+                f"Pull actions: {pull_count} (include flats on {flats_count})."
+            )
         confirm = QMessageBox.question(self, "Start queue", prompt)
         if confirm != QMessageBox.Yes:
             return
@@ -978,21 +1216,38 @@ class BackupCompareWindow(QMainWindow):
     def populate_queue_table(self) -> None:
         self.queue_table.setRowCount(0)
 
+        action_labels = {
+            "pull": "Pull",
+            "push": "Push",
+            "delete": "Delete",
+            "delete_force": "Delete (Force)",
+        }
+
         for row_index, entry in enumerate(self._queue_entries):
             self.queue_table.insertRow(row_index)
             self.queue_table.setItem(row_index, 0, QTableWidgetItem(entry.target))
-            self.queue_table.setItem(
-                row_index,
-                1,
-                QTableWidgetItem(f"{'Yes' if entry.include_flats else 'No'} ({entry.action})"),
-            )
-            self.queue_table.setItem(row_index, 2, QTableWidgetItem(entry.status))
-            self.queue_table.setItem(row_index, 3, QTableWidgetItem(str(entry.progress_percent)))
-            self.queue_table.setItem(row_index, 4, QTableWidgetItem(entry.lights_counts))
-            self.queue_table.setItem(row_index, 5, QTableWidgetItem(entry.flats_counts))
-            self.queue_table.setItem(row_index, 6, QTableWidgetItem(str(entry.copied_files)))
-            self.queue_table.setItem(row_index, 7, QTableWidgetItem(str(entry.skipped_files)))
-            self.queue_table.setItem(row_index, 8, QTableWidgetItem(str(entry.error_files)))
+            action_text = action_labels.get(entry.action, entry.action)
+            if entry.action == "pull":
+                action_text = f"{action_text} ({'Flats' if entry.include_flats else 'No Flats'})"
+            self.queue_table.setItem(row_index, 1, QTableWidgetItem(action_text))
+
+            if entry.total_files > 0:
+                files_text = str(entry.total_files)
+            elif entry.estimated_files >= 0:
+                files_text = f"~{entry.estimated_files}"
+            else:
+                files_text = "-"
+
+            files_item = QTableWidgetItem(files_text)
+            self.queue_table.setItem(row_index, 2, files_item)
+
+            self.queue_table.setItem(row_index, 3, QTableWidgetItem(entry.status))
+            self.queue_table.setItem(row_index, 4, QTableWidgetItem(str(entry.progress_percent)))
+            self.queue_table.setItem(row_index, 5, QTableWidgetItem(entry.lights_counts))
+            self.queue_table.setItem(row_index, 6, QTableWidgetItem(entry.flats_counts))
+            self.queue_table.setItem(row_index, 7, QTableWidgetItem(str(entry.copied_files)))
+            self.queue_table.setItem(row_index, 8, QTableWidgetItem(str(entry.skipped_files)))
+            self.queue_table.setItem(row_index, 9, QTableWidgetItem(str(entry.error_files)))
 
             if entry.skip_log_path:
                 open_log_button = QPushButton("Open Log")
@@ -1007,9 +1262,45 @@ class BackupCompareWindow(QMainWindow):
                 open_log_button.clicked.connect(
                     lambda _checked=False, log_path=entry.skip_log_path: _open_log(log_path)
                 )
-                self.queue_table.setCellWidget(row_index, 9, open_log_button)
+                self.queue_table.setCellWidget(row_index, 10, open_log_button)
 
         self.queue_table.resizeColumnsToContents()
+
+    @Slot(int, int)
+    def on_queue_table_cell_clicked(self, row: int, column: int) -> None:
+        how_many_files_column = 2
+        if column != how_many_files_column:
+            return
+        if not (0 <= row < len(self._queue_entries)):
+            return
+
+        preview_text = self._queue_entries[row].preview_text
+        if not preview_text:
+            return
+
+        self.show_preview_action_dialog(preview_text)
+
+    def show_preview_action_dialog(self, preview_text: str) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Preview Action")
+        dialog.resize(760, 520)
+
+        layout = QVBoxLayout(dialog)
+
+        details_box = QTextEdit()
+        details_box.setReadOnly(True)
+        details_box.setPlainText(preview_text)
+        layout.addWidget(details_box)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        close_button = buttons.button(QDialogButtonBox.Close)
+        if close_button is not None:
+            close_button.setText("Close")
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+
+        dialog.exec()
 
 
 if __name__ == "__main__":

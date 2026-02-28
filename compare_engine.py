@@ -775,100 +775,102 @@ def pull_target_from_nas(
     if not local_root_path.exists():
         raise FileNotFoundError(f"Local path does not exist: {local_root}")
 
-    smb_target_root = os.path.join(share_root, target)
-    local_target_root = local_root_path / target
+    candidate_rel_paths = list_action_candidate_files(
+        server=server,
+        username=username,
+        password=password,
+        share_root=share_root,
+        local_root=local_root,
+        target=target,
+        action="pull",
+        include_flats=include_flats,
+        require_pull_checkpoint=True,
+    )
+
     skip_log_path = _build_skip_log_path(local_root, target)
 
     with open(skip_log_path, "w", encoding="utf-8") as skip_log:
         skip_log.write(f"Skip log for target: {target}\n")
         skip_log.write(f"Generated: {datetime.now().isoformat()}\n\n")
 
+    total_files = len(candidate_rel_paths)
+    processed = 0
+
+    lights_copied = 0
+    lights_skipped = 0
+    lights_errors = 0
+
+    flats_copied = 0
+    flats_skipped = 0
+    flats_errors = 0
+
     smbclient.register_session(server, username=username, password=password)
     try:
-        total_files = _count_smb_files(smb_target_root)
+        for rel_path in candidate_rel_paths:
+            smb_file_path = os.path.join(share_root, rel_path)
+            local_file_path = local_root_path / Path(rel_path)
+            context_label = "FLATS" if _normalize_rel_path(rel_path).startswith("_FlatWizard/") else "LIGHTS"
 
-        flat_sources: list[tuple[str, Path]] = []
-        if include_flats:
             try:
-                top_entries = smbclient.listdir(smb_target_root)
+                smb_stat = smbclient.stat(smb_file_path)
+
+                if local_file_path.exists():
+                    local_stat = local_file_path.stat()
+                    same_size = local_stat.st_size == smb_stat.st_size
+                    same_mtime = int(local_stat.st_mtime) == int(smb_stat.st_mtime)
+                    if same_size and same_mtime:
+                        with open(skip_log_path, "a", encoding="utf-8") as skip_log_file:
+                            skip_log_file.write(f"[{context_label}] SKIP same size+mtime: {smb_file_path}\n")
+                        if context_label == "FLATS":
+                            flats_skipped += 1
+                        else:
+                            lights_skipped += 1
+                        processed += 1
+                        if progress_callback is not None:
+                            progress_callback(processed, total_files, str(local_file_path))
+                        continue
+
+                os.makedirs(local_file_path.parent, exist_ok=True)
+                with smbclient.open_file(smb_file_path, mode="rb") as smb_file:
+                    with open(local_file_path, "wb") as local_file:
+                        local_file.write(smb_file.read())
+
+                os.utime(local_file_path, (smb_stat.st_mtime, smb_stat.st_mtime))
+                if context_label == "FLATS":
+                    flats_copied += 1
+                else:
+                    lights_copied += 1
             except Exception:
-                top_entries = []
+                if context_label == "FLATS":
+                    flats_errors += 1
+                else:
+                    lights_errors += 1
 
-            for entry in top_entries:
-                entry_smb_path = os.path.join(smb_target_root, entry)
-                if not smbclient.path.isdir(entry_smb_path):
-                    continue
-                flat_smb_root = os.path.join(share_root, "_FlatWizard", entry)
-                if smbclient.path.isdir(flat_smb_root):
-                    flat_local_root = local_root_path / "_FlatWizard" / entry
-                    flat_sources.append((flat_smb_root, flat_local_root))
-                    total_files += _count_smb_files(flat_smb_root)
-
-        processed = 0
-
-        lights_copied = 0
-        lights_skipped = 0
-        lights_errors = 0
-
-        flats_copied = 0
-        flats_skipped = 0
-        flats_errors = 0
-
-        def _write_skip_line(text: str) -> None:
-            with open(skip_log_path, "a", encoding="utf-8") as skip_log_file:
-                skip_log_file.write(text + "\n")
-
-        processed, lights_copied, lights_skipped, lights_errors = _copy_smb_tree_to_local(
-            smb_root=smb_target_root,
-            local_root=local_target_root,
-            total_files=total_files,
-            processed=processed,
-            copied=lights_copied,
-            skipped=lights_skipped,
-            errors=lights_errors,
-            progress_callback=progress_callback,
-            context_label="LIGHTS",
-            skip_logger=_write_skip_line,
-        )
-
-        for flat_smb_root, flat_local_root in flat_sources:
-            processed, copied_delta, skipped_delta, errors_delta = _copy_smb_tree_to_local(
-                smb_root=flat_smb_root,
-                local_root=flat_local_root,
-                total_files=total_files,
-                processed=processed,
-                copied=0,
-                skipped=0,
-                errors=0,
-                progress_callback=progress_callback,
-                context_label="FLATS",
-                skip_logger=_write_skip_line,
-            )
-            flats_copied += copied_delta
-            flats_skipped += skipped_delta
-            flats_errors += errors_delta
-
-        copied = lights_copied + flats_copied
-        skipped = lights_skipped + flats_skipped
-        errors = lights_errors + flats_errors
-
-        return PullExecutionResult(
-            target=target,
-            total_files=total_files,
-            copied_files=copied,
-            skipped_files=skipped,
-            error_files=errors,
-            lights_copied_files=lights_copied,
-            lights_skipped_files=lights_skipped,
-            lights_error_files=lights_errors,
-            flats_copied_files=flats_copied,
-            flats_skipped_files=flats_skipped,
-            flats_error_files=flats_errors,
-            skip_log_path=str(skip_log_path),
-            action="pull",
-        )
+            processed += 1
+            if progress_callback is not None:
+                progress_callback(processed, total_files, str(local_file_path))
     finally:
         smbclient.reset_connection_cache()
+
+    copied = lights_copied + flats_copied
+    skipped = lights_skipped + flats_skipped
+    errors = lights_errors + flats_errors
+
+    return PullExecutionResult(
+        target=target,
+        total_files=total_files,
+        copied_files=copied,
+        skipped_files=skipped,
+        error_files=errors,
+        lights_copied_files=lights_copied,
+        lights_skipped_files=lights_skipped,
+        lights_error_files=lights_errors,
+        flats_copied_files=flats_copied,
+        flats_skipped_files=flats_skipped,
+        flats_error_files=flats_errors,
+        skip_log_path=str(skip_log_path),
+        action="pull",
+    )
 
 
 def push_target_to_nas(
@@ -1127,3 +1129,135 @@ def delete_nas_only_to_trash(
         skip_log_path=str(skip_log_path),
         action="delete",
     )
+
+
+def list_action_candidate_files(
+    *,
+    server: str,
+    username: str,
+    password: str,
+    share_root: str,
+    local_root: str,
+    target: str,
+    action: str,
+    include_flats: bool = False,
+    require_pull_checkpoint: bool = True,
+) -> list[str]:
+    local_root_path = Path(local_root)
+    if not local_root_path.exists():
+        raise FileNotFoundError(f"Local path does not exist: {local_root}")
+
+    action_key = action.lower()
+
+    local_db_path = _create_local_index_db_path(local_root)
+    if not local_db_path.exists():
+        local_db_path = refresh_local_index(local_root)
+
+    nas_db_path = _get_or_build_nas_db(
+        server=server,
+        username=username,
+        password=password,
+        share_root=share_root,
+        force_rebuild=False,
+    )
+
+    try:
+        local_rows = _load_index_rows(local_db_path)
+        nas_rows = _load_index_rows(nas_db_path)
+    finally:
+        try:
+            nas_db_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    if action_key == "pull":
+        candidates: list[str] = []
+
+        target_prefix = f"{_normalize_rel_path(target).rstrip('/')}/"
+        target_top_entries: set[str] = set()
+
+        for rel_path, (row_target, nas_size, nas_mtime) in nas_rows.items():
+            normalized_rel = _normalize_rel_path(rel_path)
+
+            if row_target == target:
+                local_entry = local_rows.get(normalized_rel)
+                if local_entry is None:
+                    candidates.append(normalized_rel)
+                else:
+                    _local_target, local_size, local_mtime = local_entry
+                    if local_size != nas_size or local_mtime != nas_mtime:
+                        candidates.append(normalized_rel)
+
+                if normalized_rel.startswith(target_prefix):
+                    suffix = normalized_rel[len(target_prefix):]
+                    first_part = suffix.split("/", 1)[0]
+                    if first_part:
+                        target_top_entries.add(first_part)
+
+        if include_flats and target_top_entries:
+            for rel_path, (_row_target, nas_size, nas_mtime) in nas_rows.items():
+                normalized_rel = _normalize_rel_path(rel_path)
+                if not normalized_rel.startswith("_FlatWizard/"):
+                    continue
+
+                parts = normalized_rel.split("/")
+                if len(parts) < 3:
+                    continue
+                flat_entry = parts[1]
+                if flat_entry not in target_top_entries:
+                    continue
+
+                local_entry = local_rows.get(normalized_rel)
+                if local_entry is None:
+                    candidates.append(normalized_rel)
+                else:
+                    _local_target, local_size, local_mtime = local_entry
+                    if local_size != nas_size or local_mtime != nas_mtime:
+                        candidates.append(normalized_rel)
+
+        return sorted(candidates)
+
+    if action_key == "push":
+        candidates: list[str] = []
+
+        found_target = False
+        for rel_path, (local_target, local_size, local_mtime) in local_rows.items():
+            if local_target != target:
+                continue
+            found_target = True
+
+            nas_entry = nas_rows.get(rel_path)
+            if nas_entry is None:
+                candidates.append(_normalize_rel_path(rel_path))
+                continue
+
+            _nas_target, nas_size, nas_mtime = nas_entry
+            if local_size != nas_size or local_mtime != nas_mtime:
+                candidates.append(_normalize_rel_path(rel_path))
+
+        if not found_target:
+            local_target_root = local_root_path / target
+            raise FileNotFoundError(f"Local target does not exist: {local_target_root}")
+
+        return sorted(candidates)
+
+    if action_key in ("delete", "delete_force"):
+        state = _load_target_state(local_root)
+        pulls = state.get("last_successful_pull", {}) if isinstance(state, dict) else {}
+        last_pull = int(pulls.get(target, 0)) if isinstance(pulls, dict) else 0
+        require_checkpoint = require_pull_checkpoint and action_key == "delete"
+        if require_checkpoint and last_pull <= 0:
+            raise RuntimeError(f"Cannot delete NAS-only files for {target}: no last successful pull timestamp found")
+
+        candidates: list[str] = []
+        for rel_path, (row_target, _size, mtime_int) in nas_rows.items():
+            if row_target != target:
+                continue
+            if rel_path in local_rows:
+                continue
+            if (not require_checkpoint) or int(mtime_int) <= last_pull:
+                candidates.append(rel_path)
+
+        return sorted(candidates)
+
+    raise ValueError(f"Unsupported action for preview: {action}")
