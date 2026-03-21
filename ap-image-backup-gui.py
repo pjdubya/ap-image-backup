@@ -268,7 +268,7 @@ class RebuildNasDbWorker(QObject):
 
 class QueueWorker(QObject):
     queue_position = Signal(str, str)
-    item_progress = Signal(str, int, int)
+    item_progress = Signal(str, int, int, int, int, int, int, int, int)
     item_finished = Signal(str, object)
     failed = Signal(str)
     finished = Signal()
@@ -296,7 +296,7 @@ class QueueWorker(QObject):
                         local_root=self.request.local_path,
                         target=entry.target,
                         include_flats=entry.include_flats,
-                        progress_callback=lambda processed, total, _path, t=entry.target: self.item_progress.emit(t, processed, total),
+                        progress_callback=lambda processed, total, _path, lc, ls, le, fc, fs, fe, t=entry.target: self.item_progress.emit(t, processed, total, lc, ls, le, fc, fs, fe),
                     )
                 elif entry.action == "push":
                     result = push_target_to_nas(
@@ -307,7 +307,7 @@ class QueueWorker(QObject):
                         local_root=self.request.local_path,
                         target=entry.target,
                         include_flats=entry.include_flats,
-                        progress_callback=lambda processed, total, _path, t=entry.target: self.item_progress.emit(t, processed, total),
+                        progress_callback=lambda processed, total, _path, lc, ls, le, fc, fs, fe, t=entry.target: self.item_progress.emit(t, processed, total, lc, ls, le, fc, fs, fe),
                     )
                 elif entry.action == "delete":
                     result = delete_nas_only_to_trash(
@@ -318,7 +318,7 @@ class QueueWorker(QObject):
                         local_root=self.request.local_path,
                         target=entry.target,
                         require_pull_checkpoint=True,
-                        progress_callback=lambda processed, total, _path, t=entry.target: self.item_progress.emit(t, processed, total),
+                        progress_callback=lambda processed, total, _path, lc, ls, le, fc, fs, fe, t=entry.target: self.item_progress.emit(t, processed, total, lc, ls, le, fc, fs, fe),
                     )
                 elif entry.action == "delete_force":
                     result = delete_nas_only_to_trash(
@@ -329,7 +329,7 @@ class QueueWorker(QObject):
                         local_root=self.request.local_path,
                         target=entry.target,
                         require_pull_checkpoint=False,
-                        progress_callback=lambda processed, total, _path, t=entry.target: self.item_progress.emit(t, processed, total),
+                        progress_callback=lambda processed, total, _path, lc, ls, le, fc, fs, fe, t=entry.target: self.item_progress.emit(t, processed, total, lc, ls, le, fc, fs, fe),
                     )
                 elif entry.action == "delete_local":
                     delete_local_target(
@@ -502,7 +502,7 @@ class BackupCompareWindow(QMainWindow):
         )
         self.pull_table.horizontalHeader().setStretchLastSection(True)
 
-        self.queue_table = QTableWidget(0, 11)
+        self.queue_table = QTableWidget(0, 8)
         self.queue_table.setHorizontalHeaderLabels(
             [
                 "Target Folder",
@@ -512,9 +512,6 @@ class BackupCompareWindow(QMainWindow):
                 "Progress %",
                 "Lights C/S/E",
                 "Flats C/S/E",
-                "Copied",
-                "Skipped",
-                "Errors",
                 "Skip Log",
             ]
         )
@@ -1055,7 +1052,7 @@ class BackupCompareWindow(QMainWindow):
         display_results = (
             results
             if processing_mode
-            else [result for result in results if (result.local_only_files > 0 or result.different_files > 0)]
+            else [result for result in results if (result.local_only_files > 0 or result.different_files > 0 or result.safe_to_delete)]
         )
 
         for row_index, result in enumerate(display_results):
@@ -1338,8 +1335,8 @@ class BackupCompareWindow(QMainWindow):
         self.queue_next_label.setText(f"Next: {next_target}")
         self.populate_queue_table()
 
-    @Slot(str, int, int)
-    def on_queue_item_progress(self, target: str, processed: int, total: int) -> None:
+    @Slot(str, int, int, int, int, int, int, int, int)
+    def on_queue_item_progress(self, target: str, processed: int, total: int, lc: int, ls: int, le: int, fc: int, fs: int, fe: int) -> None:
         action_label = "Processing"
         for entry in self._queue_entries:
             if entry.target == target:
@@ -1348,6 +1345,8 @@ class BackupCompareWindow(QMainWindow):
                     entry.progress_percent = int((processed / total) * 100)
                 else:
                     entry.progress_percent = 100
+                entry.lights_counts = f"{lc}/{ls}/{le}"
+                entry.flats_counts = f"{fc}/{fs}/{fe}"
                 if entry.action == "pull":
                     action_label = "Pulling"
                 elif entry.action == "push":
@@ -1423,9 +1422,6 @@ class BackupCompareWindow(QMainWindow):
             self.queue_table.setItem(row_index, 4, QTableWidgetItem(str(entry.progress_percent)))
             self.queue_table.setItem(row_index, 5, QTableWidgetItem(entry.lights_counts))
             self.queue_table.setItem(row_index, 6, QTableWidgetItem(entry.flats_counts))
-            self.queue_table.setItem(row_index, 7, QTableWidgetItem(str(entry.copied_files)))
-            self.queue_table.setItem(row_index, 8, QTableWidgetItem(str(entry.skipped_files)))
-            self.queue_table.setItem(row_index, 9, QTableWidgetItem(str(entry.error_files)))
 
             if entry.skip_log_path:
                 open_log_button = QPushButton("Open Log")
@@ -1440,7 +1436,7 @@ class BackupCompareWindow(QMainWindow):
                 open_log_button.clicked.connect(
                     lambda _checked=False, log_path=entry.skip_log_path: _open_log(log_path)
                 )
-                self.queue_table.setCellWidget(row_index, 10, open_log_button)
+                self.queue_table.setCellWidget(row_index, 7, open_log_button)
 
         self.queue_table.resizeColumnsToContents()
 

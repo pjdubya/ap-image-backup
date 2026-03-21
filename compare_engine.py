@@ -857,7 +857,7 @@ def pull_target_from_nas(
                             lights_skipped += 1
                         processed += 1
                         if progress_callback is not None:
-                            progress_callback(processed, total_files, str(local_file_path))
+                            progress_callback(processed, total_files, str(local_file_path), lights_copied, lights_skipped, lights_errors, flats_copied, flats_skipped, flats_errors)
                         continue
 
                 os.makedirs(local_file_path.parent, exist_ok=True)
@@ -878,7 +878,7 @@ def pull_target_from_nas(
 
             processed += 1
             if progress_callback is not None:
-                progress_callback(processed, total_files, str(local_file_path))
+                progress_callback(processed, total_files, str(local_file_path), lights_copied, lights_skipped, lights_errors, flats_copied, flats_skipped, flats_errors)
     finally:
         smbclient.reset_connection_cache()
 
@@ -975,7 +975,7 @@ def push_target_to_nas(
                         lights_skipped += 1
                     processed += 1
                     if progress_callback is not None:
-                        progress_callback(processed, total_files, str(local_file))
+                        progress_callback(processed, total_files, str(local_file), lights_copied, lights_skipped, lights_errors, flats_copied, flats_skipped, flats_errors)
                     return
             except Exception:
                 pass
@@ -996,7 +996,7 @@ def push_target_to_nas(
                 lights_errors += 1
         processed += 1
         if progress_callback is not None:
-            progress_callback(processed, total_files, str(local_file))
+            progress_callback(processed, total_files, str(local_file), lights_copied, lights_skipped, lights_errors, flats_copied, flats_skipped, flats_errors)
 
     smbclient.register_session(server, username=username, password=password)
     try:
@@ -1122,7 +1122,7 @@ def delete_nas_only_to_trash(
 
             processed += 1
             if progress_callback is not None:
-                progress_callback(processed, len(candidates), rel_path)
+                progress_callback(processed, len(candidates), rel_path, moved, 0, errors, 0, 0, 0)
 
         local_target_root = Path(local_root) / target
         dirs_to_check: set[str] = set()
