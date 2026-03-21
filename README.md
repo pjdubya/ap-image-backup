@@ -23,6 +23,10 @@ pip install -r requirements-gui.txt
 python ap-image-backup-gui.py
 ```
 
+### Credentials via .env (recommended)
+
+Copy `.env.example` to `.env` and fill in your values. GUI fields and CLI argument defaults are populated from `.env`.
+
 ### Processing machine workflow (find what to pull)
 
 In the GUI:

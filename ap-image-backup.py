@@ -45,6 +45,27 @@ smb_logger = logging.getLogger("smbprotocol")
 smb_logger.setLevel(logging.WARNING)
 
 
+def load_dotenv_file(dotenv_path):
+    values = {}
+
+    if not os.path.exists(dotenv_path):
+        return values
+
+    with open(dotenv_path, "r", encoding="utf-8") as dotenv_file:
+        for raw_line in dotenv_file:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key:
+                values[key] = value
+
+    return values
+
+
 def parse_profile(value):
     try:
         return Profile[value]
@@ -337,8 +358,8 @@ if __name__ == "__main__":
     parser.add_argument("--serverpath", type=str, help="Path to location on SMB share where files will be stored, e.g.. \\home\\myuser\\myfiles")
     parser.add_argument("--localpath", type=str, help="Path to location on local machine where files will be stored, releative to user's home directory, e.g.. Pictures\\Nina")
     parser.add_argument("--localpathabs", type=str, help="Path to location on local machine where files will be stored, using absolute format, e.g.. C:\\Users\\User\\Pictures\\Nina")
-    parser.add_argument("--profile", type=parse_profile, default=Profile.IMAGE_CAPTURE_TO_NAS, help="Profile type")
-    parser.add_argument("--delete_source", type=parse_bool, default=False, help="Delete source files after copying successfully")
+    parser.add_argument("--profile", type=parse_profile, default=None, help="Profile type")
+    parser.add_argument("--delete_source", type=parse_bool, default=None, help="Delete source files after copying successfully")
     args = parser.parse_args()
 
     # Remove password from args before logging
@@ -349,13 +370,43 @@ if __name__ == "__main__":
     logging.info("\n***********\nStarting...\n***********")
     logging.info(f"Starting script {__file__} with args: {logging_args}")
 
-    server = args.server
-    username = args.username
-    password = args.password
-    server_path = args.serverpath
-    local_path = args.localpath
-    profile = args.profile
-    delete_source = args.delete_source
+    dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    dotenv_values = load_dotenv_file(dotenv_path)
+
+    def read_config_value(key):
+        return os.getenv(key) or dotenv_values.get(key)
+
+    server = args.server or read_config_value("AP_BACKUP_SERVER")
+    username = args.username or read_config_value("AP_BACKUP_USERNAME")
+    password = args.password or read_config_value("AP_BACKUP_PASSWORD")
+    server_path = args.serverpath or read_config_value("AP_BACKUP_SERVER_PATH")
+    local_path = args.localpath or read_config_value("AP_BACKUP_LOCAL_PATH_REL")
+    local_path_abs = args.localpathabs or read_config_value("AP_BACKUP_LOCAL_PATH_ABS")
+
+    if args.profile is not None:
+        profile = args.profile
+    else:
+        profile_value = read_config_value("AP_BACKUP_PROFILE")
+        if profile_value:
+            try:
+                profile = parse_profile(profile_value)
+            except argparse.ArgumentTypeError as exc:
+                report_error_and_exit(str(exc))
+        else:
+            profile = Profile.IMAGE_CAPTURE_TO_NAS
+
+    if args.delete_source is not None:
+        delete_source = args.delete_source
+    else:
+        delete_source_value = read_config_value("AP_BACKUP_DELETE_SOURCE")
+        if delete_source_value:
+            try:
+                delete_source = parse_bool(delete_source_value)
+            except argparse.ArgumentTypeError as exc:
+                report_error_and_exit(str(exc))
+        else:
+            delete_source = False
+
     share_root = rf"\\{server}{server_path}"
 
     if not username:
@@ -382,8 +433,8 @@ if __name__ == "__main__":
     # get absolute path if relative localpath is provided
     if local_path:
         local_path = os.path.join(os.path.expanduser("~"), local_path.replace('\\', '\\\\'))
-    if (not local_path) and args.localpathabs:
-        local_path = os.path.relpath(args.localpathabs.replace('\\', '\\\\'))
+    if (not local_path) and local_path_abs:
+        local_path = os.path.relpath(local_path_abs.replace('\\', '\\\\'))
     if not local_path:
         report_error_and_exit("Must specify either localpath or localpathabs")
     if not os.path.exists(local_path):

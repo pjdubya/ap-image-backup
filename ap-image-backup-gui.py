@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 from dataclasses import dataclass
@@ -38,6 +39,102 @@ from compare_engine import (
     rebuild_nas_index,
     scan_nas_pull_candidates,
 )
+
+
+def load_dotenv_file(dotenv_path: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+
+    if not os.path.exists(dotenv_path):
+        return values
+
+    with open(dotenv_path, "r", encoding="utf-8") as dotenv_file:
+        for raw_line in dotenv_file:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key:
+                values[key] = value
+
+    return values
+
+
+def get_app_config() -> dict[str, str]:
+    config = dict(os.environ)
+    dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    for key, value in load_dotenv_file(dotenv_path).items():
+        config.setdefault(key, value)
+    return config
+
+
+def config_bool(config: dict[str, str], key: str, default: bool) -> bool:
+    raw_value = config.get(key)
+    if raw_value is None:
+        return default
+
+    normalized = raw_value.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def normalize_path(value: str) -> str:
+    return os.path.expandvars(os.path.expanduser(value.strip()))
+
+
+def get_local_path_presets(config: dict[str, str]) -> list[str]:
+    raw_presets = config.get("AP_BACKUP_LOCAL_PATH_PRESETS", "").strip()
+    parsed_presets: list[str] = []
+
+    if raw_presets:
+        try:
+            presets_value = json.loads(raw_presets)
+            if isinstance(presets_value, list):
+                for item in presets_value:
+                    if isinstance(item, str) and item.strip():
+                        parsed_presets.append(normalize_path(item))
+        except json.JSONDecodeError:
+            bracketed = raw_presets
+            if raw_presets.startswith("[") and raw_presets.endswith("]"):
+                bracketed = raw_presets[1:-1]
+
+            for item in bracketed.split(","):
+                cleaned = item.strip().strip('"').strip("'")
+                if cleaned:
+                    parsed_presets.append(normalize_path(cleaned))
+
+            if not parsed_presets:
+                for item in raw_presets.split(";"):
+                    cleaned = item.strip().strip('"').strip("'")
+                    if cleaned:
+                        parsed_presets.append(normalize_path(cleaned))
+
+    if parsed_presets:
+        return parsed_presets
+
+    default_home_path = os.path.join(os.path.expanduser("~"), "Pictures", "NINA")
+    legacy_candidates = [
+        config.get("AP_BACKUP_LOCAL_PATH_HOME", default_home_path),
+        config.get("AP_BACKUP_LOCAL_PATH_D", r"D:\Pictures\NINA"),
+    ]
+
+    deduped_presets: list[str] = []
+    for candidate in legacy_candidates:
+        if not candidate:
+            continue
+        normalized_candidate = normalize_path(candidate)
+        if normalized_candidate and normalized_candidate.lower() not in {path.lower() for path in deduped_presets}:
+            deduped_presets.append(normalized_candidate)
+
+    if deduped_presets:
+        return deduped_presets
+
+    return [normalize_path(default_home_path), normalize_path(r"D:\Pictures\NINA")]
 
 
 @dataclass
@@ -250,41 +347,85 @@ class BackupCompareWindow(QMainWindow):
         self.setWindowTitle("AP Image Backup Manager")
         self.resize(1100, 700)
 
+        self.app_config = get_app_config()
+
         self.thread: QThread | None = None
         self.worker: QObject | None = None
         self.queue_running = False
 
-        self.server_edit = QLineEdit("nasbox")
-        self.username_edit = QLineEdit("apBackup")
-        self.password_edit = QLineEdit()
-        self.password_edit.setEchoMode(QLineEdit.Password)
-        self.server_path_edit = QLineEdit(r"\home\NINA")
+        server_host = self.app_config.get("AP_BACKUP_SERVER", "nasbox.rhino-kitefin.ts.net")
+        server_path = self.app_config.get("AP_BACKUP_SERVER_PATH", r"\home\NINA")
 
-        self.home_local_path = os.path.join(os.path.expanduser("~"), "Pictures", "NINA")
-        self.alt_local_path = r"D:\Pictures\NINA"
+        self.server_edit = QLineEdit(server_host)
+        self.username_edit = QLineEdit(self.app_config.get("AP_BACKUP_USERNAME", ""))
+        self.password_edit = QLineEdit(self.app_config.get("AP_BACKUP_PASSWORD", ""))
+        self.password_edit.setEchoMode(QLineEdit.Password)
+        self.server_path_edit = QLineEdit(server_path)
+
+        self.local_path_presets = get_local_path_presets(self.app_config)
+        self.custom_local_path = normalize_path(self.app_config.get("AP_BACKUP_LOCAL_PATH_CUSTOM", ""))
         self.custom_local_preset_value = "__custom__"
 
         self.local_path_preset_combo = QComboBox()
-        self.local_path_preset_combo.addItem("Home Pictures\\NINA", self.home_local_path)
-        self.local_path_preset_combo.addItem("D:\\Pictures\\NINA", self.alt_local_path)
+        for preset_path in self.local_path_presets:
+            self.local_path_preset_combo.addItem(preset_path, preset_path)
         self.local_path_preset_combo.addItem("Custom (Browse)...", self.custom_local_preset_value)
         self.local_path_preset_combo.currentIndexChanged.connect(self.on_local_path_preset_changed)
 
-        self.local_path_edit = QLineEdit(self.home_local_path)
+        default_local_path_raw = self.app_config.get("AP_BACKUP_LOCAL_PATH_DEFAULT", "").strip()
+        default_local_path = normalize_path(default_local_path_raw) if default_local_path_raw else ""
+
+        selected_index = 0 if self.local_path_presets else self.local_path_preset_combo.findData(self.custom_local_preset_value)
+        if default_local_path_raw.lower() == "custom":
+            selected_index = self.local_path_preset_combo.findData(self.custom_local_preset_value)
+            if self.custom_local_path:
+                self.local_path_edit = QLineEdit(self.custom_local_path)
+            elif self.local_path_presets:
+                self.local_path_edit = QLineEdit(self.local_path_presets[0])
+            else:
+                self.local_path_edit = QLineEdit("")
+        else:
+            if default_local_path:
+                for idx, preset_path in enumerate(self.local_path_presets):
+                    if preset_path.lower() == default_local_path.lower():
+                        selected_index = idx
+                        break
+                else:
+                    selected_index = self.local_path_preset_combo.findData(self.custom_local_preset_value)
+                    self.local_path_edit = QLineEdit(default_local_path)
+            if not hasattr(self, "local_path_edit"):
+                initial_path = self.local_path_presets[selected_index] if self.local_path_presets else self.custom_local_path
+                self.local_path_edit = QLineEdit(initial_path)
+
+        if selected_index < 0:
+            selected_index = 0
+        self.local_path_preset_combo.setCurrentIndex(selected_index)
 
         self.mode_combo = QComboBox()
         self.mode_combo.addItem("Images (exclude WBPP/Processing)", CompareMode.IMAGES)
         self.mode_combo.addItem("WIP only (WBPP/Processing)", CompareMode.WIP)
+        compare_mode_default = self.app_config.get("AP_BACKUP_COMPARE_MODE", "images").strip().lower()
+        if compare_mode_default == "wip":
+            self.mode_combo.setCurrentIndex(1)
 
         self.machine_mode_combo = QComboBox()
         self.machine_mode_combo.addItem("Processing PC", "processing")
         self.machine_mode_combo.addItem("Creation PC", "creation")
         self.machine_mode_combo.currentIndexChanged.connect(self.on_machine_mode_changed)
+        machine_mode_default = self.app_config.get("AP_BACKUP_MACHINE_MODE", "processing").strip().lower()
+        if machine_mode_default == "creation":
+            self.machine_mode_combo.setCurrentIndex(1)
 
         self.only_action_needed_checkbox = QCheckBox("Only show folders needing action")
         self.only_action_needed_checkbox.stateChanged.connect(self.apply_filter)
+        self.only_action_needed_checkbox.setChecked(
+            config_bool(self.app_config, "AP_BACKUP_ONLY_ACTION_NEEDED", False)
+        )
 
         self.include_flats_checkbox = QCheckBox("Include flats (_FlatWizard) for queued pull actions")
+        self.include_flats_checkbox.setChecked(
+            config_bool(self.app_config, "AP_BACKUP_INCLUDE_FLATS", False)
+        )
 
         self.status_label = QLabel("Ready.")
         self.summary_label = QLabel("Summary: -")
@@ -429,7 +570,6 @@ class BackupCompareWindow(QMainWindow):
         self._all_target_results = []
         self._queue_entries: list[QueueEntry] = []
 
-        self.machine_mode_combo.setCurrentIndex(0)
         self.on_machine_mode_changed()
 
     @Slot()
