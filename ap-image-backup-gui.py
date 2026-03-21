@@ -304,6 +304,7 @@ class QueueWorker(QObject):
                         share_root=share_root,
                         local_root=self.request.local_path,
                         target=entry.target,
+                        include_flats=entry.include_flats,
                         progress_callback=lambda processed, total, _path, t=entry.target: self.item_progress.emit(t, processed, total),
                     )
                 elif entry.action == "delete":
@@ -427,6 +428,9 @@ class BackupCompareWindow(QMainWindow):
             config_bool(self.app_config, "AP_BACKUP_INCLUDE_FLATS", False)
         )
 
+        self.include_flats_push_checkbox = QCheckBox("Include flats (_FlatWizard) for queued push actions")
+        self.include_flats_push_checkbox.setChecked(False)
+
         self.status_label = QLabel("Ready.")
         self.summary_label = QLabel("Summary: -")
         self.queue_status_label = QLabel("Queue: idle")
@@ -538,6 +542,7 @@ class BackupCompareWindow(QMainWindow):
         controls_layout.addWidget(self.rebuild_nas_db_button)
         controls_layout.addWidget(self.only_action_needed_checkbox)
         controls_layout.addWidget(self.include_flats_checkbox)
+        controls_layout.addWidget(self.include_flats_push_checkbox)
         controls_layout.addStretch(1)
 
         queue_controls_layout = QHBoxLayout()
@@ -586,6 +591,7 @@ class BackupCompareWindow(QMainWindow):
         self.refresh_status_button.setVisible(True)
         self.rebuild_nas_db_button.setVisible(processing_mode)
         self.include_flats_checkbox.setVisible(processing_mode)
+        self.include_flats_push_checkbox.setVisible(not processing_mode)
         self.only_action_needed_checkbox.setVisible(processing_mode)
         self.processing_section_label.setVisible(True)
         self.pull_table.setVisible(True)
@@ -1073,7 +1079,7 @@ class BackupCompareWindow(QMainWindow):
                 lambda _checked=False, row_result=result: self.confirm_and_add_target_to_queue(
                     row_result,
                     action="push",
-                    include_flats=False,
+                    include_flats=self.include_flats_push_checkbox.isChecked(),
                 )
             )
 
@@ -1105,6 +1111,7 @@ class BackupCompareWindow(QMainWindow):
             self.clear_queue_button.setEnabled(False)
             self.only_action_needed_checkbox.setEnabled(False)
             self.include_flats_checkbox.setEnabled(False)
+            self.include_flats_push_checkbox.setEnabled(False)
             return
 
         self.compare_button.setEnabled(not busy)
@@ -1115,6 +1122,7 @@ class BackupCompareWindow(QMainWindow):
         self.clear_queue_button.setEnabled(not busy)
         self.only_action_needed_checkbox.setEnabled(not busy)
         self.include_flats_checkbox.setEnabled(not busy)
+        self.include_flats_push_checkbox.setEnabled(not busy)
 
     def add_target_to_queue(
         self,

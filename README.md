@@ -14,7 +14,7 @@ Existing command-line scripts remain unchanged.
 ### Install GUI dependencies
 
 ```bash
-pip install -r requirements-gui.txt
+pip install -r requirements.txt
 ```
 
 ### Run GUI
