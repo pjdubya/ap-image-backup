@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Callable, Dict, Iterable
 from datetime import datetime
 import os
+import shutil
 import re
 import json
 import sqlite3
@@ -59,6 +60,10 @@ class PullTargetResult:
     wip_local_only_files: int = 0
     missing_latest_mtime: int = 0
     last_pull_timestamp: int = 0
+
+    @property
+    def safe_to_delete(self) -> bool:
+        return self.local_files > 0 and self.local_only_files == 0 and self.different_files == 0
 
     @property
     def status(self) -> str:
@@ -1007,6 +1012,13 @@ def push_target_to_nas(
         skip_log_path=str(skip_log_path),
         action="push",
     )
+
+
+def delete_local_target(*, local_root: str, target: str) -> None:
+    local_target_root = Path(local_root) / target
+    if not local_target_root.exists():
+        raise FileNotFoundError(f"Local target does not exist: {local_target_root}")
+    shutil.rmtree(local_target_root)
 
 
 def delete_nas_only_to_trash(

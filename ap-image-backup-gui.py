@@ -30,7 +30,9 @@ from PySide6.QtWidgets import (
 
 from compare_engine import (
     CompareMode,
+    PullExecutionResult,
     compare_local_to_nas,
+    delete_local_target,
     delete_nas_only_to_trash,
     list_action_candidate_files,
     mark_target_pulled,
@@ -329,6 +331,19 @@ class QueueWorker(QObject):
                         require_pull_checkpoint=False,
                         progress_callback=lambda processed, total, _path, t=entry.target: self.item_progress.emit(t, processed, total),
                     )
+                elif entry.action == "delete_local":
+                    delete_local_target(
+                        local_root=self.request.local_path,
+                        target=entry.target,
+                    )
+                    result = PullExecutionResult(
+                        target=entry.target,
+                        total_files=0,
+                        copied_files=0,
+                        skipped_files=0,
+                        error_files=0,
+                        action="delete_local",
+                    )
                 else:
                     raise ValueError(f"Unsupported queue action: {entry.action}")
 
@@ -470,7 +485,7 @@ class BackupCompareWindow(QMainWindow):
         )
         self.results_table.horizontalHeader().setStretchLastSection(True)
 
-        self.pull_table = QTableWidget(0, 10)
+        self.pull_table = QTableWidget(0, 11)
         self.pull_table.setHorizontalHeaderLabels(
             [
                 "Target Folder",
@@ -482,6 +497,7 @@ class BackupCompareWindow(QMainWindow):
                 "Local Only",
                 "Different",
                 "Status",
+                "Safe To Delete",
                 "Actions",
             ]
         )
@@ -582,11 +598,11 @@ class BackupCompareWindow(QMainWindow):
         current_mode = self.machine_mode_combo.currentData()
         processing_mode = current_mode == "processing"
 
-        self.compare_button.setVisible(not processing_mode)
+        self.compare_button.setVisible(False)
         self.compare_mode_label.setVisible(not processing_mode)
         self.mode_combo.setVisible(not processing_mode)
-        self.capture_section_label.setVisible(not processing_mode)
-        self.results_table.setVisible(not processing_mode)
+        self.capture_section_label.setVisible(False)
+        self.results_table.setVisible(False)
 
         self.refresh_status_button.setVisible(True)
         self.rebuild_nas_db_button.setVisible(processing_mode)
@@ -871,6 +887,7 @@ class BackupCompareWindow(QMainWindow):
             "push": "Push to NAS",
             "delete": "Delete on NAS (_Trash)",
             "delete_force": "Delete on NAS (_Trash, force)",
+            "delete_local": "Delete Local Folder",
         }
         action_title = action_titles.get(action, action)
 
@@ -956,6 +973,7 @@ class BackupCompareWindow(QMainWindow):
             "push": "Push to NAS",
             "delete": "Delete on NAS (_Trash)",
             "delete_force": "Delete on NAS (_Trash, force)",
+            "delete_local": "Delete Local Folder",
         }
         action_title = action_titles.get(action, action)
         if preview_text is None:
@@ -1051,6 +1069,7 @@ class BackupCompareWindow(QMainWindow):
             self.pull_table.setItem(row_index, 6, QTableWidgetItem(str(result.local_only_files)))
             self.pull_table.setItem(row_index, 7, QTableWidgetItem(str(result.different_files)))
             self.pull_table.setItem(row_index, 8, QTableWidgetItem(result.status))
+            self.pull_table.setItem(row_index, 9, QTableWidgetItem("Yes" if result.safe_to_delete else "No"))
 
             action_widget = QWidget()
             action_layout = QHBoxLayout(action_widget)
@@ -1074,7 +1093,7 @@ class BackupCompareWindow(QMainWindow):
             if processing_mode:
                 queue_push_button.setEnabled(result.local_only_files > 0 and not is_queued)
             else:
-                queue_push_button.setEnabled(not is_queued)
+                queue_push_button.setEnabled((result.local_only_files > 0 or result.different_files > 0) and not is_queued)
             queue_push_button.clicked.connect(
                 lambda _checked=False, row_result=result: self.confirm_and_add_target_to_queue(
                     row_result,
@@ -1082,7 +1101,6 @@ class BackupCompareWindow(QMainWindow):
                     include_flats=self.include_flats_push_checkbox.isChecked(),
                 )
             )
-
             action_layout.addWidget(queue_push_button)
 
             if processing_mode:
@@ -1096,8 +1114,19 @@ class BackupCompareWindow(QMainWindow):
                     )
                 )
                 action_layout.addWidget(queue_delete_button)
+            else:
+                queue_delete_local_button = QPushButton("Queue Delete Local")
+                queue_delete_local_button.setEnabled(result.safe_to_delete and not is_queued)
+                queue_delete_local_button.clicked.connect(
+                    lambda _checked=False, row_result=result: self.confirm_and_add_target_to_queue(
+                        row_result,
+                        action="delete_local",
+                        include_flats=False,
+                    )
+                )
+                action_layout.addWidget(queue_delete_local_button)
 
-            self.pull_table.setCellWidget(row_index, 9, action_widget)
+            self.pull_table.setCellWidget(row_index, 10, action_widget)
 
         self.pull_table.resizeColumnsToContents()
 
@@ -1369,6 +1398,7 @@ class BackupCompareWindow(QMainWindow):
             "push": "Push",
             "delete": "Delete",
             "delete_force": "Delete (Force)",
+            "delete_local": "Delete Local",
         }
 
         for row_index, entry in enumerate(self._queue_entries):
