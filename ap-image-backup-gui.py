@@ -427,7 +427,6 @@ class BackupCompareWindow(QMainWindow):
         self.machine_mode_combo = QComboBox()
         self.machine_mode_combo.addItem("Processing PC", "processing")
         self.machine_mode_combo.addItem("Creation PC", "creation")
-        self.machine_mode_combo.currentIndexChanged.connect(self.on_machine_mode_changed)
         machine_mode_default = self.app_config.get("AP_BACKUP_MACHINE_MODE", "processing").strip().lower()
         if machine_mode_default == "creation":
             self.machine_mode_combo.setCurrentIndex(1)
@@ -591,6 +590,7 @@ class BackupCompareWindow(QMainWindow):
         self._all_target_results = []
         self._queue_entries: list[QueueEntry] = []
 
+        self.machine_mode_combo.currentIndexChanged.connect(self.on_machine_mode_changed)
         self.on_machine_mode_changed()
 
     @Slot()

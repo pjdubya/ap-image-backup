@@ -125,6 +125,31 @@ def _parse_recent_date_from_target(target: str) -> str:
     return match.group(1)
 
 
+def _flat_dirs_for_entries(target_top_entries: set[str], flat_dir_names: Iterable[str]) -> set[str]:
+    """Return flat dir names that match any entry in target_top_entries by exact name or next calendar day.
+
+    NINA names sessions by the date the imaging run ended (which may be after midnight, so the
+    flat frames taken the following morning carry the next calendar day's date).
+    """
+    matching: set[str] = set()
+    date_re = re.compile(r"^(DATE_)(\d{4}-\d{2}-\d{2})(.*)")
+    next_days: set[str] = set()
+    for entry in target_top_entries:
+        m = date_re.match(entry)
+        if m:
+            try:
+                d = datetime.strptime(m.group(2), "%Y-%m-%d")
+                from datetime import timedelta
+                next_day = (d + timedelta(days=1)).strftime("%Y-%m-%d")
+                next_days.add(m.group(1) + next_day + m.group(3))
+            except ValueError:
+                pass
+    for name in flat_dir_names:
+        if name in target_top_entries or name in next_days:
+            matching.add(name)
+    return matching
+
+
 def _normalize_rel_path(path: str) -> str:
     return path.replace("\\", "/")
 
@@ -896,13 +921,16 @@ def push_target_to_nas(
 
     # Determine which FlatWizard subdirs to include based on top-level dirs within the target.
     # Locally NINA outputs to FlatWizard/ (no underscore); NAS stores under _FlatWizard/.
+    # Flats are often dated the next calendar day after the corresponding lights session.
     flat_dirs_to_push: list[Path] = []
     if include_flats:
         target_top_entries = {e.name for e in local_target_root.iterdir() if e.is_dir()}
         flat_root = local_root_path / "FlatWizard"
         if flat_root.exists():
+            flat_dir_names = [e.name for e in flat_root.iterdir() if e.is_dir()]
+            matching = _flat_dirs_for_entries(target_top_entries, flat_dir_names)
             for entry in flat_root.iterdir():
-                if entry.is_dir() and entry.name in target_top_entries:
+                if entry.is_dir() and entry.name in matching:
                     flat_dirs_to_push.append(entry)
 
     skip_log_path = _build_skip_log_path(local_root, f"push_{target}")
@@ -1242,18 +1270,20 @@ def list_action_candidate_files(
                         target_top_entries.add(first_part)
 
         if include_flats and target_top_entries:
-            for rel_path, (_row_target, nas_size, nas_mtime) in nas_rows.items():
+            nas_flat_dir_names = {
+                _normalize_rel_path(rel_path).split("/")[1]
+                for rel_path in nas_rows
+                if _normalize_rel_path(rel_path).startswith("_FlatWizard/")
+                and len(_normalize_rel_path(rel_path).split("/")) >= 3
+            }
+            matching_flat_dirs = _flat_dirs_for_entries(target_top_entries, nas_flat_dir_names)
+            for rel_path, (_, nas_size, nas_mtime) in nas_rows.items():
                 normalized_rel = _normalize_rel_path(rel_path)
                 if not normalized_rel.startswith("_FlatWizard/"):
                     continue
-
                 parts = normalized_rel.split("/")
-                if len(parts) < 3:
+                if len(parts) < 3 or parts[1] not in matching_flat_dirs:
                     continue
-                flat_entry = parts[1]
-                if flat_entry not in target_top_entries:
-                    continue
-
                 local_entry = local_rows.get(normalized_rel)
                 if local_entry is None:
                     candidates.append(normalized_rel)
@@ -1297,15 +1327,19 @@ def list_action_candidate_files(
             raise FileNotFoundError(f"Local target does not exist: {local_target_root}")
 
         if include_flats and target_top_entries:
+            local_flat_dir_names = {
+                _normalize_rel_path(rel_path).split("/")[1]
+                for rel_path in local_rows
+                if _normalize_rel_path(rel_path).startswith("FlatWizard/")
+                and len(_normalize_rel_path(rel_path).split("/")) >= 3
+            }
+            matching_flat_dirs = _flat_dirs_for_entries(target_top_entries, local_flat_dir_names)
             for rel_path, (local_target, local_size, local_mtime) in local_rows.items():
                 normalized_rel = _normalize_rel_path(rel_path)
-                # Local NINA outputs to FlatWizard/ (no underscore); NAS stores as _FlatWizard/
                 if not normalized_rel.startswith("FlatWizard/"):
                     continue
                 parts = normalized_rel.split("/")
-                if len(parts) < 3:
-                    continue
-                if parts[1] not in target_top_entries:
+                if len(parts) < 3 or parts[1] not in matching_flat_dirs:
                     continue
                 nas_rel = "_" + normalized_rel  # FlatWizard/ → _FlatWizard/
                 nas_entry = nas_rows.get(nas_rel)
