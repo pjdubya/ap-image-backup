@@ -1405,7 +1405,7 @@ class BackupCompareWindow(QMainWindow):
             self.queue_table.insertRow(row_index)
             self.queue_table.setItem(row_index, 0, QTableWidgetItem(entry.target))
             action_text = action_labels.get(entry.action, entry.action)
-            if entry.action == "pull":
+            if entry.action in ("pull", "push"):
                 action_text = f"{action_text} ({'Flats' if entry.include_flats else 'No Flats'})"
             self.queue_table.setItem(row_index, 1, QTableWidgetItem(action_text))
 
