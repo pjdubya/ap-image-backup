@@ -731,7 +731,7 @@ def scan_nas_pull_candidates(
                     target_result.different_files += 1
 
         for rel_path, (local_target, _size, _mtime) in local_rows.items():
-            if local_target.startswith("_"):
+            if local_target.startswith("_") or local_target == "FlatWizard":
                 continue
             if local_target not in results_map:
                 results_map[local_target] = PullTargetResult(
@@ -894,11 +894,12 @@ def push_target_to_nas(
     if not local_target_root.exists():
         raise FileNotFoundError(f"Local target does not exist: {local_target_root}")
 
-    # Determine which _FlatWizard subdirs to include based on top-level dirs within the target
+    # Determine which FlatWizard subdirs to include based on top-level dirs within the target.
+    # Locally NINA outputs to FlatWizard/ (no underscore); NAS stores under _FlatWizard/.
     flat_dirs_to_push: list[Path] = []
     if include_flats:
         target_top_entries = {e.name for e in local_target_root.iterdir() if e.is_dir()}
-        flat_root = local_root_path / "_FlatWizard"
+        flat_root = local_root_path / "FlatWizard"
         if flat_root.exists():
             for entry in flat_root.iterdir():
                 if entry.is_dir() and entry.name in target_top_entries:
@@ -928,7 +929,9 @@ def push_target_to_nas(
     def _push_file(local_file: Path, context_label: str) -> None:
         nonlocal processed, lights_copied, lights_skipped, lights_errors, flats_copied, flats_skipped, flats_errors
         rel_path = _normalize_rel_path(str(local_file.relative_to(local_root_path)))
-        smb_file = os.path.join(share_root, rel_path)
+        # Remap local FlatWizard/ (no underscore) → NAS _FlatWizard/ (with underscore)
+        nas_rel_path = "_" + rel_path if rel_path.startswith("FlatWizard/") else rel_path
+        smb_file = os.path.join(share_root, nas_rel_path)
         try:
             local_stat = local_file.stat()
             local_size = int(local_stat.st_size)
@@ -953,7 +956,7 @@ def push_target_to_nas(
                 with smbclient.open_file(smb_file, mode="wb") as smb_fh:
                     smb_fh.write(local_fh.read())
             smbclient.utime(smb_file, (local_mtime, local_mtime))
-            nas_upserts.append((rel_path, local_size, local_mtime))
+            nas_upserts.append((nas_rel_path, local_size, local_mtime))
             if context_label == "FLATS":
                 flats_copied += 1
             else:
@@ -1296,20 +1299,22 @@ def list_action_candidate_files(
         if include_flats and target_top_entries:
             for rel_path, (local_target, local_size, local_mtime) in local_rows.items():
                 normalized_rel = _normalize_rel_path(rel_path)
-                if not normalized_rel.startswith("_FlatWizard/"):
+                # Local NINA outputs to FlatWizard/ (no underscore); NAS stores as _FlatWizard/
+                if not normalized_rel.startswith("FlatWizard/"):
                     continue
                 parts = normalized_rel.split("/")
                 if len(parts) < 3:
                     continue
                 if parts[1] not in target_top_entries:
                     continue
-                nas_entry = nas_rows.get(rel_path)
+                nas_rel = "_" + normalized_rel  # FlatWizard/ → _FlatWizard/
+                nas_entry = nas_rows.get(nas_rel)
                 if nas_entry is None:
-                    candidates.append(normalized_rel)
+                    candidates.append(nas_rel)
                 else:
                     _nas_target, nas_size, nas_mtime = nas_entry
                     if local_size != nas_size or local_mtime != nas_mtime:
-                        candidates.append(normalized_rel)
+                        candidates.append(nas_rel)
 
         return sorted(candidates)
 
