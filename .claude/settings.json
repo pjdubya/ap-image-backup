@@ -5,7 +5,10 @@
       "Bash(d:/repos/ap-image-backup/.venv/Scripts/pip.exe show:*)",
       "Bash(.venv/Scripts/pip install:*)",
       "Bash(.venv/Scripts/pyinstaller --onefile --windowed --name \"ap-image-backup\" ap-image-backup-gui.py)",
-      "Bash(git -C d:/repos/ap-image-backup remote get-url origin)"
+      "Bash(git -C d:/repos/ap-image-backup remote get-url origin)",
+      "Bash(d:/repos/ap-image-backup/.venv/Scripts/pip show:*)",
+      "Bash(d:/repos/ap-image-backup/.venv/Scripts/pip install:*)",
+      "Bash(.venv/Scripts/python build_icon.py)"
     ]
   }
 }
