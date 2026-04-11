@@ -6,6 +6,7 @@ import sys
 from dataclasses import dataclass
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -1480,6 +1481,9 @@ class BackupCompareWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    icon_path = os.path.join(getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__))), "icon.ico")
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
     window = BackupCompareWindow()
     window.show()
     sys.exit(app.exec())
