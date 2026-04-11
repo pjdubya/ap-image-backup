@@ -4,3 +4,10 @@ logs/*
 __pycache__/
 *.py[cod]
 .env
+build/
+dist/
+*.spec
+ap-image-backup.spec
+launch.vbs
+launch.pyw
+run.bat

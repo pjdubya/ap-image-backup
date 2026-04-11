@@ -66,7 +66,8 @@ def load_dotenv_file(dotenv_path: str) -> dict[str, str]:
 
 def get_app_config() -> dict[str, str]:
     config = dict(os.environ)
-    dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    base_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+    dotenv_path = os.path.join(base_dir, ".env")
     for key, value in load_dotenv_file(dotenv_path).items():
         config.setdefault(key, value)
     return config
