@@ -86,3 +86,42 @@ After each queue item, a `Skip Log` button opens the per-target skip-reason log 
 ### Safety note
 
 Comparison features are read-only. Queue actions run only what you explicitly queued per target.
+
+## Prebuilt Windows executable
+
+A standalone `ap-image-backup.exe` (no Python install required) is built automatically by GitHub Actions — see [.github/workflows/build.yml](.github/workflows/build.yml).
+
+- Trigger: every push to `main`.
+- The workflow generates the icon (`build_icon.py`), then runs PyInstaller against `ap-image-backup-gui.py`.
+- The resulting exe is **not** committed to the repo (`dist/` and `build/` are gitignored) — it's attached to a new GitHub Release tagged `build-<run number>`.
+- To get the latest build, download it from the repo's **Releases** page.
+- To build it yourself locally, install `pyinstaller` and `pillow`, then run the same steps as the workflow:
+
+  ```bash
+  python build_icon.py
+  pyinstaller --onefile --windowed --icon "icon.ico" --add-data "icon.ico;." --name "ap-image-backup" ap-image-backup-gui.py
+  ```
+
+  The exe will be in `dist/`.
+
+### Installing the exe on a machine
+
+1. Create a folder for the app, e.g. `C:\Program Files\ap-image-backup` (needs admin) or `%LOCALAPPDATA%\Programs\ap-image-backup` (no admin needed).
+2. Copy `ap-image-backup.exe` into that folder.
+3. Copy `.env.example` into that same folder, rename it to `.env`, and fill in that machine's values. The exe looks for `.env` next to itself (not next to any Python source), so it must live alongside the exe.
+4. Add a Start Menu shortcut to the exe:
+   - Right-click `ap-image-backup.exe` → `Show more options` → `Create shortcut`.
+   - Move the resulting `.lnk` file into the Start Menu, either by dragging it into the Start Menu itself or by moving it into `%APPDATA%\Microsoft\Windows\Start Menu\Programs` (open that path via `Win+R`).
+
+   Or create the shortcut from PowerShell:
+
+   ```powershell
+   $exe = "C:\Program Files\ap-image-backup\ap-image-backup.exe"
+   $lnk = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\ap-image-backup.lnk"
+   $shell = New-Object -ComObject WScript.Shell
+   $shortcut = $shell.CreateShortcut($lnk)
+   $shortcut.TargetPath = $exe
+   $shortcut.WorkingDirectory = Split-Path $exe
+   $shortcut.Save()
+   ```
+5. Launch it from the Start Menu like any other installed app.
